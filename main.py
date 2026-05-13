@@ -1,9 +1,9 @@
 import os
 import time
 
-import pandas as pd
 from dotenv import load_dotenv
 from google import genai
+from openpyxl import load_workbook
 
 # Load environment variables (override=True ensures it reads the latest from .env)
 load_dotenv(override=True)
@@ -73,38 +73,61 @@ def main():
         print(f"Error: {INPUT_FILE} not found.")
         return
 
-    # Read the input file
-    df = pd.read_excel(INPUT_FILE)
+    # Load the workbook and get the active worksheet
+    wb = load_workbook(INPUT_FILE)
+    ws = wb.active
 
-    # Initialize the normalized_query column if it does not exist
-    if "normalized_query" not in df.columns:
-        df["normalized_query"] = None
+    # Extract headers from the first row to find column indices
+    headers = [cell.value for cell in ws[1]]
 
-    print(f"Start processing {len(df)} rows...")
+    if COLUMN_NAME not in headers:
+        print(f"Error: Column '{COLUMN_NAME}' not found in the Excel file.")
+        return
 
-    for index, row in df.iterrows():
-        current_normalized_val = row.get("normalized_query")
+    # openpyxl uses 1-based indexing for columns
+    title_col_idx = headers.index(COLUMN_NAME) + 1
+
+    normalized_col_name = "normalized_query"
+    if normalized_col_name in headers:
+        normalized_col_idx = headers.index(normalized_col_name) + 1
+    else:
+        # If the column doesn't exist, create it at the end
+        normalized_col_idx = len(headers) + 1
+        ws.cell(row=1, column=normalized_col_idx, value=normalized_col_name)
+        wb.save(INPUT_FILE)  # Save the new header immediately
+
+    total_rows = ws.max_row - 1  # Subtract 1 for the header row
+    print(f"Start processing {total_rows} rows...")
+
+    # Iterate starting from row 2 (skipping header)
+    for row_num in range(2, ws.max_row + 1):
+        normalized_cell = ws.cell(row=row_num, column=normalized_col_idx)
+        current_normalized_val = normalized_cell.value
 
         # Check if the cell already contains a normalized query
-        # pd.notna handles NaNs, and we also check for empty strings or string representation of "nan"
-        if (
-            pd.notna(current_normalized_val)
-            and str(current_normalized_val).strip() != ""
-            and str(current_normalized_val).lower() != "nan"
-        ):
+        if current_normalized_val is not None:
+            val_str = str(current_normalized_val).strip().lower()
+            if val_str != "" and val_str != "nan":
+                continue
+
+        title_cell = ws.cell(row=row_num, column=title_col_idx)
+        raw_q = title_cell.value
+
+        # Skip if the source title is empty
+        if raw_q is None or str(raw_q).strip() == "":
             continue
 
-        raw_q = str(row[COLUMN_NAME])
-        print(f"Processing ({index + 1}/{len(df)}): {raw_q}")
+        raw_q_str = str(raw_q)
+        print(f"Processing ({row_num - 1}/{total_rows}): {raw_q_str}")
 
-        normalized_q = normalize_query(raw_q)
+        normalized_q = normalize_query(raw_q_str)
 
         if normalized_q:
-            # Update the specific cell in the dataframe
-            df.at[index, "normalized_query"] = normalized_q
+            # Update the specific cell in the worksheet
+            normalized_cell.value = normalized_q
 
             # Overwrite the input file to save progress safely
-            df.to_excel(INPUT_FILE, index=False)
+            wb.save(INPUT_FILE)
             print(f"Saved: {normalized_q}")
 
         # Sleep to respect rate limits
