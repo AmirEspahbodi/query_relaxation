@@ -1,36 +1,65 @@
 import os
 import time
 
-print("print 1")
 import pandas as pd
-
-print("print 2")
-
+from dotenv import load_dotenv
 from google import genai
 
-print()
-import pandas as pd
+# Load environment variables (override=True ensures it reads the latest from .env)
+load_dotenv(override=True)
 
-API_KEY = "AIzaSyBEI72sxtV6Omsrj2B_W1iRwiwkit-e8Fw"
+API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not API_KEY:
+    raise ValueError(
+        "API Key not found! Make sure the .env file is present and GEMINI_API_KEY is defined."
+    )
+
+# Configuration
 INPUT_FILE = "Book1.xlsx"
 COLUMN_NAME = "title"
-OUTPUT_FILE = "queries_normalized.xlsx"
 MODEL_NAME = "gemini-3-flash-preview"
 
 client = genai.Client(api_key=API_KEY)
 
 
 def normalize_query(raw_query):
-    prompt = f"""
-    به عنوان یک متخصص سئو و جستجو، عبارت جستجوی زیر را نرمال کن.
-    هدف: حذف جزئیات اضافی (رنگ، سایز، صفات، کلمات مدل‌وار طولانی) و نگه داشتن هسته اصلی محصول.
-    قانون: فقط و فقط عبارت نهایی را برگردان و هیچ توضیحی نده.
+    # استفاده از تگ‌های ساختاریافته و تکنیک Few-Shot برای هدایت دقیق مدل Flash
+    prompt = f"""شما یک متخصص داده‌های ساختاریافته و کارشناس سئو فروشگاهی (E-commerce) هستید.
+وظیفه شما استانداردسازی و نرمال‌سازی کوئری‌های جستجوی محصولات برای جلوگیری از خطای سیستم کرالر (Crawler) است.
 
-    مثال: "کفش دویدن نایک مدل ایرمکس ۲۰۲۴ رنگ قرمز سایز ۴۲" -> "کفش نایک ایرمکس"
-    مثال: "گوشی موبایل سامسونگ گلکسی اس ۲۴ الترا ظرفیت ۲۵۶ گیگ" -> "سامسونگ گلکسی S24 Ultra"
+<rules>
+۱. اصلاح واحدها: واحدهای اندازه‌گیری مخفف یا اشتباه را کامل کن (مثلاً «م» یا «میل» به «میلی لیتر»، «گ» به «گرم» و عباراتی مثل «۳۰ تایی» به «بسته 30 عددی»).
+۲. اصلاح فینگلیش و املا: برندها و کلمات فینگلیش را به معادل صحیح و استاندارد (فارسی یا انگلیسی رایج در سایت‌ها) تبدیل کن.
+۳. ساختاردهی: در صورت امکان، نام محصول را به فرمت رایج فروشگاهی مرتب کن: [نوع محصول] [نام برند] مدل [نام مدل] [ویژگی‌های کلیدی] [حجم/وزن].
+۴. حذف کلمات مزاحم: کلمات اضافی سئو، صفات تبلیغاتی و عبارات نامربوط که در کرال کردن اخلال ایجاد می‌کنند را حذف کن.
+۵. خروجی نهایی: فقط و فقط نام نرمال‌شده محصول را برگردان. از چاپ کردن هرگونه تگ، توضیح اضافه، یا کاراکترهای نشانه‌گذاری خودداری کن.
+</rules>
 
-    عبارت: "{raw_query}"
-    """
+<examples>
+Input: "ضدآفتاب پرایم فیوژن واتر c با اس پی اف 50 40م"
+Output: فلوئید ضد آفتاب پرایم مدل فیوژن واتر حاوی ویتامین سی با SPF50 حجم 40 میلی لیتر
+
+Input: "کرم ابرسان jute هیدرا اکتیو 70 میل"
+Output: کرم آبرسان ژوت مدل Hydra Active حجم 70 میلی لیتر
+
+Input: "ژل شستشو هیدرودرم پوست چرب acne wash 150ml"
+Output: ژل شستشوی صورت هیدرودرم مناسب پوست چرب مدل Acne Wash حجم 150 میلی لیتر
+
+Input: "پودر امینو eaa ترک نوتریشن ۳۰۰گ"
+Output: پودر آمینو eaa ترک نوتریشن وزن 300 گرم
+
+Input: "قرص ویت اسکای sky woman 30 تایی"
+Output: قرص اسکای وومن ویت اسکای بسته 30 عددی
+
+Input: "مام رول مردانه شون فاقد الومینیوم 50میل"
+Output: مام رول مردانه فاقد آلومینیوم کلراید 50میل شون
+</examples>
+
+<input>
+{raw_query}
+</input>
+"""
     try:
         response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
         return response.text.strip()
@@ -41,18 +70,28 @@ def normalize_query(raw_query):
 
 def main():
     if not os.path.exists(INPUT_FILE):
-        print(f"error: {INPUT_FILE} not found.")
+        print(f"Error: {INPUT_FILE} not found.")
         return
 
+    # Read the input file
     df = pd.read_excel(INPUT_FILE)
 
+    # Initialize the normalized_query column if it does not exist
     if "normalized_query" not in df.columns:
-        df["normalized_query"] = ""
+        df["normalized_query"] = None
 
-    print(f"start processing {len(df)} rows...")
+    print(f"Start processing {len(df)} rows...")
 
     for index, row in df.iterrows():
-        if pd.notna(row["normalized_query"]) and row["normalized_query"] != "":
+        current_normalized_val = row.get("normalized_query")
+
+        # Check if the cell already contains a normalized query
+        # pd.notna handles NaNs, and we also check for empty strings or string representation of "nan"
+        if (
+            pd.notna(current_normalized_val)
+            and str(current_normalized_val).strip() != ""
+            and str(current_normalized_val).lower() != "nan"
+        ):
             continue
 
         raw_q = str(row[COLUMN_NAME])
@@ -61,11 +100,14 @@ def main():
         normalized_q = normalize_query(raw_q)
 
         if normalized_q:
+            # Update the specific cell in the dataframe
             df.at[index, "normalized_query"] = normalized_q
 
-            df.to_excel(OUTPUT_FILE, index=False)
+            # Overwrite the input file to save progress safely
+            df.to_excel(INPUT_FILE, index=False)
             print(f"Saved: {normalized_q}")
 
+        # Sleep to respect rate limits
         time.sleep(4)
 
 
